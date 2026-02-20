@@ -20,12 +20,12 @@ export async function POST(req: Request) {
     const token = process.env.REPLICATE_API_TOKEN;
     if (!token) return Response.json({ error: "Missing REPLICATE_API_TOKEN" }, { status: 500 });
 
-    const replicate = new Replicate({ auth: token });
+    // ✅ Important: return URL outputs, not File/stream objects
+    const replicate = new Replicate({ auth: token, useFileOutput: false });
 
-    // ✅ Correct Replicate reference format: owner/name:version
     const MODEL = "ideogram-ai/ideogram-v3-turbo";
     const VERSION =
-      "f8a8eb2c75d7d86ec58e3b8309cee63acb437fbab2695bc5004acf64d2de61a7"; // :contentReference[oaicite:1]{index=1}
+      "f8a8eb2c75d7d86ec58e3b8309cee63acb437fbab2695bc5004acf64d2de61a7";
 
     const form = await req.formData();
     const prompt = String(form.get("prompt") || "").trim();
@@ -39,7 +39,7 @@ export async function POST(req: Request) {
 
     const input: Record<string, any> = { prompt, aspect_ratio, magic_prompt_option };
 
-    // If you want inpainting, send BOTH image and mask (only if the model supports it in its schema)
+    // Inpainting: only if you send BOTH image + mask
     if (person || mask) {
       if (!person || !mask) {
         return Response.json({ error: "To inpaint, provide BOTH image and mask" }, { status: 400 });
@@ -50,9 +50,32 @@ export async function POST(req: Request) {
 
     const output = await replicate.run(`${MODEL}:${VERSION}` as any, { input });
 
-    // ideogram-v3-turbo returns a single URI string (per Replicate schema)
-    const imageUrl = typeof output === "string" ? output : null;
-    if (!imageUrl) return Response.json({ error: "Unexpected output", output }, { status: 500 });
+    // Robust output parsing
+    let imageUrl: string | null = null;
+
+    if (typeof output === "string") {
+      imageUrl = output;
+    } else if (Array.isArray(output) && typeof output[0] === "string") {
+      imageUrl = output[0];
+    } else if (output && typeof output === "object") {
+      const anyOut = output as any;
+      imageUrl =
+        (typeof anyOut.url === "string" && anyOut.url) ||
+        (typeof anyOut.href === "string" && anyOut.href) ||
+        (typeof anyOut.output === "string" && anyOut.output) ||
+        null;
+    }
+
+    if (!imageUrl) {
+      return Response.json(
+        {
+          error: "Unexpected output (after parsing)",
+          outputType: typeof output,
+          outputPreview: Array.isArray(output) ? output.slice(0, 2) : output,
+        },
+        { status: 500 }
+      );
+    }
 
     return Response.json({ imageUrl });
   } catch (err: any) {
